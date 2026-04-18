@@ -3,7 +3,9 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![GitHub Release](https://img.shields.io/github/v/release/hessius/ha-meticulous)](https://github.com/hessius/ha-meticulous/releases)
 
-Native Home Assistant integration for the [Meticulous Espresso Machine](https://www.meticuloushome.com/). Auto-discovers your machine on the local network and provides real-time telemetry, controls, and automations — no MQTT broker or Docker addon required.
+Native Home Assistant integration for the [Meticulous Espresso Machine](https://www.meticuloushome.com/), adapted from [Nick Wilson's meticulous-addon](https://github.com/nickwilsonr/meticulous-addon). This project rewrites the original MQTT-based addon as a native HA integration — auto-discovery via Zeroconf, direct Socket.IO connection, no MQTT broker or Docker addon required.
+
+> **Based on [meticulous-addon](https://github.com/nickwilsonr/meticulous-addon) by [@nickwilsonr](https://github.com/nickwilsonr)** — the sensor definitions, protocol handling, delta filtering, and command mappings in this integration are derived from Nick's work on the original Home Assistant addon.
 
 ## ✨ Features
 
