@@ -8,14 +8,12 @@ from enum import StrEnum
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import (
-    SIGNAL_STRENGTH_DECIBELS,
     EntityCategory,
     UnitOfPressure,
     UnitOfTemperature,
     UnitOfTime,
     UnitOfMass,
     UnitOfElectricPotential,
-    UnitOfVolumeFlowRate,
 )
 
 DOMAIN = "meticulous_espresso"

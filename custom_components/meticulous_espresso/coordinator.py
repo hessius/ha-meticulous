@@ -610,7 +610,7 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             def _set() -> Any:
                 return api.update_setting(
-                    PartialSettings(sounds_enabled=enabled)
+                    PartialSettings(enable_sounds=enabled)
                 )
 
             result = await self.hass.async_add_executor_job(_set)
@@ -688,8 +688,8 @@ class MeticulousPollingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Refresh settings
             settings = await self.hass.async_add_executor_job(api.get_settings)
             if settings and not isinstance(settings, APIError):
-                if hasattr(settings, "sounds_enabled"):
-                    self._push.data["sounds_enabled"] = settings.sounds_enabled
+                if hasattr(settings, "enable_sounds"):
+                    self._push.data["sounds_enabled"] = settings.enable_sounds
                 if hasattr(settings, "brightness"):
                     self._push.data["brightness"] = settings.brightness
 

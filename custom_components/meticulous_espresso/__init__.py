@@ -23,10 +23,7 @@ PLATFORMS = [
     Platform.IMAGE,
 ]
 
-type MeticulousConfigEntry = ConfigEntry
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: MeticulousConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Meticulous Espresso from a config entry."""
     host = entry.data[CONF_HOST]
 
@@ -62,7 +59,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MeticulousConfigEntry) -
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: MeticulousConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
