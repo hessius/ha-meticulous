@@ -41,6 +41,35 @@ Native Home Assistant integration for the [Meticulous Espresso Machine](https://
 | Software Version | Machine software | — |
 | Voltage | Supply voltage (V) | voltage |
 
+### Piston Diagnostics
+Diagnostic sensors for the piston motor, useful for spotting a slow rise in effort over time (seal friction, scale) and for maintenance reminders. They reuse the existing Socket.IO sensor stream; no extra polling or connections are added.
+
+| Entity | Description | Default |
+|--------|-------------|---------|
+| Piston Position | Live piston position (0 = top, ~76 = bottom). Changes only while the piston moves; delta-filtered like pressure/flow | disabled |
+| Piston Raise Avg Power / Peak Power | Motor drive level during a manual raise (Home from Idle) | enabled |
+| Piston Raise Avg Current / Duration | Motor current and move time during a manual raise | enabled |
+| Pre-shot Retract Avg Power / Peak Power / Avg Current / Duration | Same, for the retract before each shot | enabled |
+| Piston Lower Avg Power / Peak Power / Avg Current / Duration | Same, for a manual lower (Purge from Idle) | enabled |
+| … Travel / Motor Temp, Piston Raise Boiler Temp | Context for comparing moves | disabled |
+| Piston After-Shot Current / Speed | Friction measure from the retraction after **every shot** (see below) | enabled |
+
+The effort sensors update **once per move** (when the move finishes), so they add very little to the recorder.
+
+#### After-shot retract: a friction measure for every shot
+Right after every shot the machine retracts the piston at full drive once the pressure has dropped. Seal friction is the only load that changes from shot to shot, so it shows up as motor current. Per shot, the integration keeps the samples that are:
+
+- at full drive (|drive| ≥ 99 %): a fixed effort, so extra load means extra current
+- below 0.1 bar: skips the pressure release, which depends on the puck
+- moving at ≥ 8 mm/s: steady motion only, no acceleration or braking
+- between 35 and 55 mm: the same stretch of cylinder every shot (start points vary with the dose, and friction can vary along the bore)
+
+With at least 5 such samples (≈ 0.5 s), **Piston After-Shot Current** is their median current and **Piston After-Shot Speed** their median speed (it drops slightly as friction rises). The retract *before* a shot is ignored (recognised by the state before *Retracting*).
+
+Over 506 shots, 466 gave a value. The same-day spread was about 0.035 A (about 0.08 A when friction is high), with clear drops after greasing/descaling (1.49 → 0.99 A and 1.32 → 1.05 A) and a steady rise in between. Single shots scatter, so look at a 7-day median or a trend rather than one value.
+
+**History:** the first time the integration starts with these sensors, it reads every shot stored on the machine (a few days at a time, in the background) and imports the same measure into Home Assistant's long-term statistics, so graphs show the trend from the first shot. The action `meticulous_espresso.import_shot_history` repeats the import (safe to run again: hourly rows are replaced).
+
 ### Binary Sensors
 | Entity | Description | Device Class |
 |--------|-------------|-------------|
