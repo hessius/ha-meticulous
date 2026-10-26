@@ -14,6 +14,7 @@ importing older shots from the machine's own shot history (history_import).
 from __future__ import annotations
 
 from collections.abc import Iterable
+from math import isfinite
 from statistics import median
 
 # A sample is (position mm, speed mm/s, drive %, current A, pressure bar).
@@ -28,16 +29,28 @@ AFTER_SHOT_MIN_SAMPLES = 5
 # Machine states before "Retracting" that mean the retract is the pre-shot one
 PRE_SHOT_STATES = {
     None,
-    "Idle",
-    "Click to Start",
-    "Heating",
-    "Preheating",
-    "Starting...",
-    "Boot",
-    "Home",
-    "Purge",
-    "Finished",
+    "",
+    "unknown",
+    "idle",
+    "click to start",
+    "heating",
+    "preheating",
+    "starting...",
+    "boot",
+    "home",
+    "purge",
+    "finished",
 }
+
+
+def is_after_shot_retract(state: str | None, previous_state: str | None) -> bool:
+    """Identify a retract that follows an observed profile stage."""
+    return (
+        state is not None
+        and state.strip().casefold() == "retracting"
+        and previous_state is not None
+        and previous_state.replace("_", " ").strip().casefold() not in PRE_SHOT_STATES
+    )
 
 
 def summarise(samples: Iterable[Sample]) -> tuple[float, float] | None:
@@ -46,8 +59,9 @@ def summarise(samples: Iterable[Sample]) -> tuple[float, float] | None:
     steady = [
         s
         for s in samples
-        if abs(s[2]) >= AFTER_SHOT_MIN_DRIVE
-        and abs(s[1]) >= AFTER_SHOT_MIN_SPEED
+        if all(isfinite(value) for value in s)
+        and s[2] <= -AFTER_SHOT_MIN_DRIVE
+        and s[1] <= -AFTER_SHOT_MIN_SPEED
         and abs(s[4]) < AFTER_SHOT_MAX_PRESSURE
         and lo <= s[0] <= hi
     ]

@@ -11,6 +11,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
+from math import isfinite
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
@@ -20,7 +21,7 @@ from meticulous import Api
 from meticulous.api import ApiOptions
 from meticulous.api_types import ActionType, APIError, BrightnessRequest, PartialSettings
 
-from .after_shot import PRE_SHOT_STATES, summarise
+from .after_shot import Sample, is_after_shot_retract, summarise
 from .connection import build_base_url, discover_api
 from .const import (
     DOMAIN,
@@ -112,8 +113,8 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Piston motor effort tracking (see PISTON_MOVES in const.py)
         self._state_before: str | None = None
         self._motor_episode: dict[str, Any] | None = None
-        self._after_shot: list[tuple[float, float, float, float, float]] | None = None
-        self._pressure: float = 0.0
+        self._after_shot: list[Sample] | None = None
+        self._pressure: float | None = None
         self._last_preheat_time: float = 0.0
 
         # Current data snapshot
@@ -187,6 +188,7 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception:
                 pass
         self._connected = False
+        self._reset_motor_tracking()
 
     def _disconnect_socket(self) -> None:
         """Disconnect Socket.IO (runs in executor)."""
@@ -223,6 +225,7 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     onHeaterStatus=self._handle_heater_status_event,
                 )
                 api = Api(base_url=base_url, options=options)
+                api.sio.on("disconnect", self._reset_motor_tracking)
                 device_info = api.get_device_info()
                 return api, device_info, port
 
@@ -267,6 +270,7 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             """Connect Socket.IO (blocking)."""
             if not self._api:
                 return
+            self._reset_motor_tracking()
             self._api.connect_to_socket()
             # Register profileHover listener (not exposed via ApiOptions)
             self._api.sio.on("profileHover", self._handle_profile_hover_event)
@@ -302,6 +306,7 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
                     def _try_reconnect() -> None:
                         if self._api:
+                            self._reset_motor_tracking()
                             self._api.connect_to_socket()
 
                     await self.hass.async_add_executor_job(_try_reconnect)
@@ -379,6 +384,20 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             coarse_state = status.get("state", "unknown").lower()
             is_extracting = status.get("extracting", False)
 
+            previous_state = (
+                _normalize_state_name(self._previous_state_name)
+                if self._previous_state_name is not None
+                else None
+            )
+            observed_state = (
+                _normalize_state_name(detailed_state_raw)
+                if detailed_state_raw
+                else coarse_state.capitalize()
+            )
+            if observed_state != previous_state:
+                self._finish_motor_tracking()
+                self._state_before = previous_state
+
             if detailed_state_raw and detailed_state_raw != self._previous_state_name:
                 if detailed_state_raw.lower() == "idle" and self._has_active_preheat():
                     new_state = "Preheating"
@@ -386,11 +405,6 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     new_state = _normalize_state_name(detailed_state_raw)
                 if new_state != self._current_state:
                     _LOGGER.info("State transition: %s → %s", self._current_state, new_state)
-                    self._state_before = (
-                        _normalize_state_name(self._previous_state_name)
-                        if self._previous_state_name is not None
-                        else None
-                    )
                     self._current_state = new_state
                 self._previous_state_name = detailed_state_raw
             elif not detailed_state_raw and self._previous_state_name is not None:
@@ -411,9 +425,17 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 weight = getattr(sensors, "w", 0)
 
             try:
-                self._pressure = float(pressure or 0)
+                raw_pressure = (
+                    sensors.get("p")
+                    if isinstance(sensors, dict)
+                    else getattr(sensors, "p", None)
+                )
+                self._pressure = float(raw_pressure)
+                if not isfinite(self._pressure):
+                    self._pressure = None
             except (TypeError, ValueError):
-                pass
+                self._pressure = None
+                _LOGGER.debug("Ignoring missing or invalid pressure for motor tracking")
 
             brewing = coarse_state != "idle" and is_extracting
 
@@ -502,6 +524,21 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # temperatures). Samples are only buffered during a raise / retract / lower
     # and summarised once when the move ends; nothing is published per sample.
 
+    def _reset_motor_tracking(self, reason: str | None = None) -> None:
+        """Discard interrupted moves and require a fresh observed state."""
+        self._motor_episode = None
+        self._after_shot = None
+        self._state_before = None
+        self._previous_state_name = None
+        self._pressure = None
+
+    def _finish_motor_tracking(self) -> None:
+        """Publish completed moves at the status boundary, even between sensor packets."""
+        episode, self._motor_episode = self._motor_episode, None
+        if episode is not None:
+            self._finish_motor_episode(episode)
+        self._finish_after_shot()
+
     def _motor_kind(self) -> str | None:
         cur, before = self._current_state, self._state_before
         if cur == "Home" and before == "Idle":
@@ -543,36 +580,41 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ─── After-shot retract (one friction value per shot, see after_shot.py) ──
 
     def _track_after_shot(self, get: Any) -> None:
-        after = (
-            self._current_state == "Retracting"
-            and self._state_before not in PRE_SHOT_STATES
-        )
-        if not after:
-            if self._after_shot is not None:
-                samples, self._after_shot = self._after_shot, None
-                result = summarise(samples)
-                if result is not None:
-                    current, speed = result
-                    _LOGGER.info("After-shot retract: %.3f A at %.2f mm/s", current, speed)
-                    for key, value in (("after_shot_current", current), ("after_shot_speed", speed)):
-                        self.data[key] = value
-                        self._last_values[key] = value
-                    self.hass.loop.call_soon_threadsafe(self.async_set_updated_data, dict(self.data))
+        if not is_after_shot_retract(self._current_state, self._state_before):
+            self._finish_after_shot()
+            return
+        if self._pressure is None:
             return
         if self._after_shot is None:
             self._after_shot = []
         try:
             self._after_shot.append(
                 (
-                    float(get("m_pos", 0) or 0),
-                    float(get("m_spd", 0) or 0),
-                    float(get("m_pwr", 0) or 0),
-                    float(get("m_cur", 0) or 0),
+                    float(get("m_pos")),
+                    float(get("m_spd")),
+                    float(get("m_pwr")),
+                    float(get("m_cur")),
                     self._pressure,
                 )
             )
         except (TypeError, ValueError):
+            _LOGGER.debug("Ignoring after-shot sample with missing or invalid motor data")
             return
+
+    def _finish_after_shot(self) -> None:
+        """Publish one friction measurement for the completed retract."""
+        samples, self._after_shot = self._after_shot, None
+        if samples is None:
+            return
+        result = summarise(samples)
+        if result is None:
+            return
+        current, speed = result
+        _LOGGER.info("After-shot retract: %.3f A at %.2f mm/s", current, speed)
+        for key, value in (("after_shot_current", current), ("after_shot_speed", speed)):
+            self.data[key] = value
+            self._last_values[key] = value
+        self.hass.loop.call_soon_threadsafe(self.async_set_updated_data, dict(self.data))
 
     def _finish_motor_episode(self, ep: dict[str, Any]) -> None:
         samples = ep["samples"]
@@ -591,7 +633,13 @@ class MeticulousPushCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             f"{kind}_motor_temp": round(sum(x[5] for x in moving) / len(moving), 1),
         }
         if kind == "raise" and ep.get("boiler") is not None:
-            updates["raise_boiler_temp"] = round(float(ep["boiler"]), 1)
+            try:
+                boiler_temp = float(ep["boiler"])
+            except (TypeError, ValueError):
+                _LOGGER.warning("Ignoring invalid boiler temperature in piston raise summary")
+            else:
+                if isfinite(boiler_temp):
+                    updates["raise_boiler_temp"] = round(boiler_temp, 1)
         _LOGGER.info("Piston %s summary: %s", kind, updates)
         for k, v in updates.items():
             self.data[k] = v

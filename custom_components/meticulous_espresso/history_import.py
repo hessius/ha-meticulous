@@ -28,7 +28,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 
-from .after_shot import summarise
+from .after_shot import Sample, is_after_shot_retract, summarise
 from .connection import build_base_url
 from .const import DOMAIN
 
@@ -47,22 +47,36 @@ SERIES = {
 
 def _shot_summary(shot: dict[str, Any]) -> tuple[float, float] | None:
     """Summarise one shot from the machine's history format."""
-    samples = []
+    samples: list[Sample] = []
+    state: str | None = None
+    state_before: str | None = None
     for row in shot.get("data") or []:
+        status = row.get("status")
+        if not isinstance(status, str) or not status.strip():
+            _LOGGER.debug("Ignoring history row without an observed status")
+            state = state_before = None
+            continue
+        status = status.replace("_", " ").strip().casefold()
+        if status != state:
+            state_before, state = state, status
+        if not is_after_shot_retract(state, state_before):
+            continue
         s = row.get("sensors")
-        if not isinstance(s, dict):
+        shot_data = row.get("shot")
+        if not isinstance(s, dict) or not isinstance(shot_data, dict):
             continue
         try:
             samples.append(
                 (
-                    float(s.get("motor_position") or 0),
-                    float(s.get("motor_speed") or 0),
-                    float(s.get("motor_power") or 0),
-                    float(s.get("motor_current") or 0),
-                    float((row.get("shot") or {}).get("pressure") or 0),
+                    float(s["motor_position"]),
+                    float(s["motor_speed"]),
+                    float(s["motor_power"]),
+                    float(s["motor_current"]),
+                    float(shot_data["pressure"]),
                 )
             )
-        except (TypeError, ValueError):
+        except (KeyError, TypeError, ValueError):
+            _LOGGER.debug("Ignoring history row with missing or invalid motor/pressure data")
             continue
     return summarise(samples)
 
