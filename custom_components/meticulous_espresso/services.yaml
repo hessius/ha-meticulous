@@ -1,0 +1,6 @@
+import_shot_history:
+  name: Import shot history
+  description: >-
+    Read every shot stored on the machine and (re)fill the long-term statistics of the
+    Piston After-Shot Current and Speed sensors. Runs automatically once after setup;
+    safe to repeat.

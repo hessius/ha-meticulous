@@ -6,10 +6,11 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 
 from .const import DOMAIN
 from .coordinator import MeticulousPollingCoordinator, MeticulousPushCoordinator
+from .history_import import async_import_after_shot_history, async_import_once
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +51,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Do initial refresh of slow data
     await poll_coordinator.async_config_entry_first_refresh()
+    # A DataUpdateCoordinator only keeps polling while something listens to it, and no entity
+    # subscribes to this one, so without this it would never refresh after the first run.
+    entry.async_on_unload(poll_coordinator.async_add_listener(lambda: None))
 
     # Store coordinators in runtime data
     hass.data.setdefault(DOMAIN, {})
@@ -63,6 +67,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Forward to platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # The first time the after-shot sensors exist, fill their long-term statistics from the
+    # machine's own shot history (in the background, once; see history_import.py)
+    entry.async_create_background_task(
+        hass,
+        async_import_once(
+            hass, entry.entry_id, push_coordinator.host, push_coordinator.port, push_coordinator.serial
+        ),
+        f"{DOMAIN} shot history import",
+    )
+
+    if not hass.services.has_service(DOMAIN, "import_shot_history"):
+
+        async def _import_history(call: ServiceCall) -> None:
+            """Re-import the after-shot measure for all past shots (safe to repeat)."""
+            for data in hass.data.get(DOMAIN, {}).values():
+                push = data["push"]
+                await async_import_after_shot_history(hass, push.host, push.port, push.serial)
+
+        hass.services.async_register(DOMAIN, "import_shot_history", _import_history)
 
     return True
 
